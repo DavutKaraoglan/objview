@@ -6,8 +6,6 @@ A 3D model viewer that runs **inside your termux**.
   <img src="docs/demo.gif" width="340" alt="objview running in Termux on a phone">
 </p>
 
-Runs at 30 fps on a phone.
-
 ## Install
 
 ```sh
@@ -22,7 +20,6 @@ pkg install python-numpy
 pip install pillow
 ```
 
-Pillow is only needed for GLB texture sampling; OBJ files load without it.
 
 ## Usage
 
