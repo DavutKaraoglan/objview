@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Turntable OBJ/GLB showcase drawn with quadrant-block pixels in the terminal."""
 import io, json, math, os, select, shutil, struct, sys, termios, time, tty
 import numpy as np
 from PIL import Image
@@ -8,19 +7,16 @@ PALETTE = [(226, 74, 74), (86, 200, 110), (78, 126, 235), (235, 196, 78), (196, 
 DIST = 3.5
 PITCH = 0.4
 YAW = 0.0
-ZOOM = 1.0  # scales the projection instead of the eye distance, so closing in never warps
+ZOOM = 1.0
 PANX = PANY = 0.0
 LIGHT = (-0.2796, 0.4660, 0.8388)
 GLTYPE = {5120: "i1", 5121: "u1", 5122: "i2", 5123: "u2", 5125: "u4", 5126: "f4"}
 GLSIZE = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
-# One glyph per subset of the cell's four quadrants, bits TL/TR/BL/BR.
 GLYPH = " \u2598\u259d\u2580\u2596\u258c\u259e\u259b\u2597\u259a\u2590\u259c\u2584\u2599\u259f\u2588"
-RAMP = " .:-=+abo*#%@"  # `text` mode: one character per cell, density instead of blocks
+RAMP = " .:-=+abo*#%@"
 
 
 def palette(groups):
-    # A palette per group reads as parts on a real model but as confetti once every
-    # triangle is its own group, as in an OBJ without object splits.
     n = groups[-1] + 1
     return [PALETTE[g % len(PALETTE)] for g in groups] if n <= 64 else [PALETTE[3]] * len(groups)
 
@@ -90,12 +86,9 @@ def load_glb(path):
             bv = js["bufferViews"][js["images"][si]["bufferView"]]
             o = bv.get("byteOffset", 0)
             im = Image.open(io.BytesIO(blob[o: o + bv["byteLength"]]))
-            # One texel per triangle, so full resolution is wasted -- but an atlas
-            # shrunk too far bleeds unrelated islands into each other.
             im.thumbnail((1024, 1024))
             cache[si] = np.asarray(im.convert("RGB"), float)
         img = cache[si]
-        # A triangle is at most a pixel or two on screen, so its centre texel is enough.
         uv = accessor(prim["attributes"][uvk]).astype(float)[idx].mean(1) % 1.0
         px = (uv * (img.shape[1] - 1, img.shape[0] - 1)).astype(int)
         return img[px[:, 1], px[:, 0]] * tint / 255
@@ -134,30 +127,22 @@ verts, TI, rgbs = load_glb(src) if src.lower().endswith(".glb") else load_obj(sr
 V0 = verts - verts.mean(0)
 V0 /= np.linalg.norm(V0, axis=1).max()
 TI0, COL0 = TI, np.array(rgbs, float)
-# The turntable sweeps x and z through each other, so the widest the model ever
-# gets is its radius in that plane; height is independent.
 RX = np.hypot(V0[:, 0], V0[:, 2]).max()
 RY = np.abs(V0[:, 1]).max()
 HALF = np.float32(0.5)
 
 
 def detail(n):
-    """Weld vertices onto an n-cell grid. A mesh carries far more detail than a
-    terminal shows, and dropping the excess is what keeps the frame loop at 30 fps."""
     global V, TI, COL, NRM, PLANE, UNIT
     key = np.floor((V0 + 1) * (n / 2)).astype(np.int64).clip(0, n - 1)
     _, first, inv = np.unique(key @ (n * n, n, 1), return_index=True, return_inverse=True)
     t = inv[TI0]
     keep = (t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])
     V, TI, COL = V0[first], t[keep], COL0[keep]
-    # Face normals live in model space, so a frame only has to dot them with the
-    # unrotated eye and light instead of rebuilding a cross product per triangle.
     A = V[TI[:, 0]]
     NRM = np.cross(V[TI[:, 1]] - A, V[TI[:, 2]] - A)
     PLANE = (NRM * A).sum(1)
     UNIT = NRM / np.linalg.norm(NRM, axis=1, keepdims=True).clip(1e-12)
-    # Single precision is plenty for a few thousand pixels and halves the memory
-    # traffic, which is what a per-frame pass over 60k triangles is actually bound by.
     V, NRM, PLANE, UNIT, COL = (a.astype(np.float32) for a in (V, NRM, PLANE, UNIT, COL))
 
 
@@ -176,7 +161,7 @@ def frame(ang):
     Y = y * cp - zp * sp
     Z = y * sp + zp * cp - DIST
     s = min(cols / RX, h / RY) * 1.6 * ZOOM / Z
-    SX = w / 2 - (X - PANX) * s * 2  # quadrant pixels are half a cell wide, so x needs twice the scale
+    SX = w / 2 - (X - PANX) * s * 2
     SY = h / 2 + (Y - PANY) * s
 
     vis = np.nonzero(NRM @ unrotate(0.0, 0.0, DIST, ca, sa, cp, sp) > PLANE)[0]
@@ -194,8 +179,6 @@ def frame(ang):
     on = dot & (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
     off, dep, col = yi[on] * w + xi[on], depth[on], color[on]
 
-    # Triangles wider than a pixel need edge tests. Expanding every bounding box
-    # into one flat list of candidate pixels keeps that a numpy job.
     big = np.nonzero(~dot)[0]
     gxi, gxj, gxm = xi[big], xj[big], xm[big]
     gyi, gyj, gym = yi[big], yj[big], ym[big]
@@ -204,8 +187,6 @@ def frame(ang):
     loy = np.minimum(np.minimum(gyi, gyj), gym).clip(0, h)
     hiy = (np.maximum(np.maximum(gyi, gyj), gym) + 1).clip(0, h)
     bw, cnt = hix - lox, (hix - lox) * (hiy - loy)
-    # Most of them merely straddle one pixel boundary. Painting both ends of such a
-    # box skips the expansion entirely and can only spill a sub-pixel sliver.
     p = np.nonzero(cnt == 2)[0]
     tp = big[p]
     off = np.concatenate([off, loy[p] * w + lox[p], (hiy[p] - 1) * w + hix[p] - 1])
@@ -216,8 +197,8 @@ def frame(ang):
     t = np.repeat(np.arange(big.size, dtype=np.int32), cnt)
     loc = np.arange(cnt.sum(), dtype=np.int32) - np.repeat(np.cumsum(cnt) - cnt, cnt)
     px, py = lox[t] + loc % bw[t], loy[t] + loc // bw[t]
-    X, Y = px + HALF, py + HALF  # a plain 0.5 would promote the int pixel grid to float64
-    t = big[t]  # one fancy index per attribute instead of a select then a gather
+    X, Y = px + HALF, py + HALF
+    t = big[t]
     x0, y0, x1, y1, x2, y2 = (v[t] for v in (ax, ay, bx, by, cx, cy))
     e0 = (x1 - x0) * (Y - y0) - (y1 - y0) * (X - x0) < 0
     e1 = (x2 - x1) * (Y - y1) - (y2 - y1) * (X - x1) < 0
@@ -229,11 +210,9 @@ def frame(ang):
     col = np.concatenate([col, color[t]])
 
     fb = np.zeros(w * h, np.int32)
-    order = np.argsort(dep)  # painter's order, so the nearest write lands last
+    order = np.argsort(dep)
     fb[off[order]] = col[order]
 
-    # Four pixels share a cell but ANSI gives two colours, so split them at the
-    # midpoint luminance and average each half.
     quad = fb.reshape(h // 2, 2, w // 2, 2).transpose(0, 2, 1, 3).reshape(h // 2, w // 2, 4)
     chan = np.stack([quad >> 16 & 255, quad >> 8 & 255, quad & 255], -1).astype(float)
     lum = chan @ (0.3, 0.6, 0.1)
@@ -243,7 +222,7 @@ def frame(ang):
     fg = ((chan * hi[:, :, :, None]).sum(2) / np.maximum(n, 1)).astype(np.int64) @ pack
     bg = ((chan * ~hi[:, :, :, None]).sum(2) / np.maximum(4 - n, 1)).astype(np.int64) @ pack
     bits = (hi * (1, 2, 4, 8)).sum(2)
-    if TEXT:  # glyph density carries the shading, so the colour can run at full brightness
+    if TEXT:
         mean = chan.mean(2)
         fg = (mean / np.maximum(mean.max(2), 1)[:, :, None] * 255).astype(np.int64) @ pack
         bg = np.zeros_like(fg)
@@ -274,7 +253,7 @@ try:
     t0 = prev = time.monotonic()
     due, ang, spin = 0.0, 0.0, True
     while True:
-        while live and select.select([sys.stdin], [], [], 0)[0]:  # arrow keys sit on the Termux extra row
+        while live and select.select([sys.stdin], [], [], 0)[0]:
             k = os.read(fd, 64).decode("utf-8", "replace")
             if "q" in k:
                 raise KeyboardInterrupt
@@ -286,14 +265,13 @@ try:
             PITCH = min(1.5, max(-1.5, PITCH + 0.1 * (k.count("\x1b[A") - k.count("\x1b[B"))))
             ZOOM *= 1.25 ** (k.count("+") + k.count("i")) * 0.8 ** (k.count("-") + k.count("o"))
             ZOOM = min(60.0, max(0.25, ZOOM))
-            PANX += 0.08 / ZOOM * (k.count("d") - k.count("a"))  # model units, so a step
-            PANY += 0.08 / ZOOM * (k.count("w") - k.count("s"))  # always nudges the same distance
+            PANX += 0.08 / ZOOM * (k.count("d") - k.count("a"))
+            PANY += 0.08 / ZOOM * (k.count("w") - k.count("s"))
             spin = spin and not (k.count("\x1b[C") or k.count("\x1b[D"))
         now = time.monotonic()
         ang, prev = ang + (now - prev) * 0.8 * spin, now
         sys.stdout.write(frame(ang + YAW))
         sys.stdout.flush()
-        # Pace at 30 fps, but never build up a backlog when a frame runs long.
         due = max(due + 1 / 30, time.monotonic() - t0)
         time.sleep(max(0.0, t0 + due - time.monotonic()))
 except KeyboardInterrupt:
