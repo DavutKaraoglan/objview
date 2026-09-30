@@ -24,7 +24,7 @@ pip install pillow
 ## Usage
 
 ```sh
-python3 objview.py <model.obj|model.glb> [text]
+python3 objview.py <model.obj|model.glb> [text] [hq]
 ```
 
 | Key | Action |
@@ -37,8 +37,11 @@ python3 objview.py <model.obj|model.glb> [text]
 | `r` | Reset camera |
 | `q` | Quit |
 
-Pass `text` as a second argument for ASCII mode, which trades the block glyphs for a
-density ramp (`" .:-=+abo*#%@"`) at one character per cell.
+Pass `text` for ASCII mode, which trades the block glyphs for a density ramp
+(`" .:-=+abo*#%@"`) at one character per cell.
+
+Pass `hq` to supersample 2x and average back down. Edges stop crawling and colors blend
+properly, at roughly half the frame rate.
 
 Resolution is your terminal's cell count, so a smaller font means a sharper picture.
 

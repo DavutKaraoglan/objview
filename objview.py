@@ -116,7 +116,8 @@ def load_glb(path):
 
 TEXT = "text" in sys.argv[1:]
 CHARS = RAMP if TEXT else GLYPH
-args = [a for a in sys.argv[1:] if a != "text"]
+SS = 2 if "hq" in sys.argv[1:] else 1
+args = [a for a in sys.argv[1:] if a not in ("text", "hq")]
 src = args[0] if args else "models/cube.obj"
 for cand in (src, f"{sys.path[0]}/{src}", f"{sys.path[0]}/models/{src}"):
     if os.path.exists(cand):
@@ -130,6 +131,9 @@ TI0, COL0 = TI, np.array(rgbs, float)
 RX = np.hypot(V0[:, 0], V0[:, 2]).max()
 RY = np.abs(V0[:, 1]).max()
 HALF = np.float32(0.5)
+MASK = ((np.arange(8)[:, None] >> np.arange(4)) & 1).astype(np.float32)
+INVF = (1 / np.maximum(MASK.sum(1), 1)).astype(np.float32)
+INVB = (1 / np.maximum(4 - MASK.sum(1), 1)).astype(np.float32)
 
 
 def detail(n):
@@ -154,15 +158,16 @@ def unrotate(x, y, z, ca, sa, cp, sp):
 def frame(ang):
     cols, rows = shutil.get_terminal_size()
     w, h = cols * 2, (rows - 1) * 2
+    rw, rh = w * SS, h * SS
     ca, sa, cp, sp = math.cos(ang), math.sin(ang), math.cos(PITCH), math.sin(PITCH)
     x, y, z = V[:, 0], V[:, 1], V[:, 2]
     X = x * ca + z * sa
     zp = z * ca - x * sa
     Y = y * cp - zp * sp
     Z = y * sp + zp * cp - DIST
-    s = min(cols / RX, h / RY) * 1.6 * ZOOM / Z
-    SX = w / 2 - (X - PANX) * s * 2
-    SY = h / 2 + (Y - PANY) * s
+    s = min(cols / RX, h / RY) * 1.6 * ZOOM * SS / Z
+    SX = rw / 2 - (X - PANX) * s * 2
+    SY = rh / 2 + (Y - PANY) * s
 
     vis = np.nonzero(NRM @ unrotate(0.0, 0.0, DIST, ca, sa, cp, sp) > PLANE)[0]
     i, j, m = TI[vis, 0], TI[vis, 1], TI[vis, 2]
@@ -176,20 +181,20 @@ def frame(ang):
     xi, xj, xm = ax.astype(np.int32), bx.astype(np.int32), cx.astype(np.int32)
     yi, yj, ym = ay.astype(np.int32), by.astype(np.int32), cy.astype(np.int32)
     dot = (xi == xj) & (xi == xm) & (yi == yj) & (yi == ym)
-    on = dot & (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
-    off, dep, col = yi[on] * w + xi[on], depth[on], color[on]
+    on = dot & (xi >= 0) & (xi < rw) & (yi >= 0) & (yi < rh)
+    off, dep, col = yi[on] * rw + xi[on], depth[on], color[on]
 
     big = np.nonzero(~dot)[0]
     gxi, gxj, gxm = xi[big], xj[big], xm[big]
     gyi, gyj, gym = yi[big], yj[big], ym[big]
-    lox = np.minimum(np.minimum(gxi, gxj), gxm).clip(0, w)
-    hix = (np.maximum(np.maximum(gxi, gxj), gxm) + 1).clip(0, w)
-    loy = np.minimum(np.minimum(gyi, gyj), gym).clip(0, h)
-    hiy = (np.maximum(np.maximum(gyi, gyj), gym) + 1).clip(0, h)
+    lox = np.minimum(np.minimum(gxi, gxj), gxm).clip(0, rw)
+    hix = (np.maximum(np.maximum(gxi, gxj), gxm) + 1).clip(0, rw)
+    loy = np.minimum(np.minimum(gyi, gyj), gym).clip(0, rh)
+    hiy = (np.maximum(np.maximum(gyi, gyj), gym) + 1).clip(0, rh)
     bw, cnt = hix - lox, (hix - lox) * (hiy - loy)
     p = np.nonzero(cnt == 2)[0]
     tp = big[p]
-    off = np.concatenate([off, loy[p] * w + lox[p], (hiy[p] - 1) * w + hix[p] - 1])
+    off = np.concatenate([off, loy[p] * rw + lox[p], (hiy[p] - 1) * rw + hix[p] - 1])
     dep = np.concatenate([dep, depth[tp], depth[tp]])
     col = np.concatenate([col, color[tp], color[tp]])
     cnt[p] = 0
@@ -205,28 +210,33 @@ def frame(ang):
     e2 = (x0 - x2) * (Y - y2) - (y0 - y2) * (X - x2) < 0
     ins = np.nonzero((e0 == e1) & (e1 == e2))[0]
     t = t[ins]
-    off = np.concatenate([off, py[ins] * w + px[ins]])
+    off = np.concatenate([off, py[ins] * rw + px[ins]])
     dep = np.concatenate([dep, depth[t]])
     col = np.concatenate([col, color[t]])
 
-    fb = np.zeros(w * h, np.int32)
+    fb = np.zeros(rw * rh, np.int32)
     order = np.argsort(dep)
     fb[off[order]] = col[order]
 
-    quad = fb.reshape(h // 2, 2, w // 2, 2).transpose(0, 2, 1, 3).reshape(h // 2, w // 2, 4)
-    chan = np.stack([quad >> 16 & 255, quad >> 8 & 255, quad & 255], -1).astype(float)
-    lum = chan @ (0.3, 0.6, 0.1)
-    hi = lum > (lum.min(2) + lum.max(2))[:, :, None] / 2
-    n = hi.sum(2)[:, :, None]
+    rgb = np.stack([fb >> 16 & 255, fb >> 8 & 255, fb & 255], -1).astype(np.float32).reshape(rh, rw, 3)
+    if SS > 1:
+        rgb = rgb.reshape(h, SS, w, SS, 3).mean((1, 3))
+    chan = rgb.reshape(h // 2, 2, w // 2, 2, 3).transpose(0, 2, 1, 3, 4).reshape(h // 2, w // 2, 4, 3)
     pack = (1 << 16, 1 << 8, 1)
-    fg = ((chan * hi[:, :, :, None]).sum(2) / np.maximum(n, 1)).astype(np.int64) @ pack
-    bg = ((chan * ~hi[:, :, :, None]).sum(2) / np.maximum(4 - n, 1)).astype(np.int64) @ pack
-    bits = (hi * (1, 2, 4, 8)).sum(2)
     if TEXT:
+        lum = chan @ np.float32((0.3, 0.6, 0.1))
         mean = chan.mean(2)
         fg = (mean / np.maximum(mean.max(2), 1)[:, :, None] * 255).astype(np.int64) @ pack
         bg = np.zeros_like(fg)
         bits = (lum.mean(2) * (len(RAMP) - 1) / 200).astype(int).clip(0, len(RAMP) - 1)
+    else:
+        sub = MASK @ chan
+        rest = chan.sum(2)[:, :, None, :] - sub
+        bits = ((sub * sub).sum(3) * INVF + (rest * rest).sum(3) * INVB).argmax(2)
+        sel, row = bits.ravel(), np.arange(bits.size)
+        fg = (sub.reshape(-1, 8, 3)[row, sel] * INVF[sel, None]).astype(np.int64) @ pack
+        bg = (rest.reshape(-1, 8, 3)[row, sel] * INVB[sel, None]).astype(np.int64) @ pack
+        fg, bg = fg.reshape(bits.shape), bg.reshape(bits.shape)
 
     out, last = ["\x1b[H"], None
     for frow, brow, grow in zip(fg.tolist(), bg.tolist(), bits.tolist()):
