@@ -1,8 +1,6 @@
 # objview
 
-A 3D model viewer that runs **inside your termux**. No browser, no OpenGL, no window
-manager — it reads an OBJ or GLB file, rasterizes it in software, and paints the result
-with Unicode quadrant blocks and truecolor ANSI escapes.
+A 3D model viewer that runs **inside your termux**.
 
 <p align="center">
   <img src="docs/demo.gif" width="340" alt="objview running in Termux on a phone">
